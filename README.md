@@ -1,1 +1,1 @@
-# NIPSSub
+# Let's submit!
