@@ -992,7 +992,7 @@ class Trainer(nn.Module):
         metadata_list,
         K=50,
         N=2,
-        M=50,           #! 起始阶段基于概率采样K个topic node，然后随机采样N个路径，保留top M个. 
+        M=50,
         way='greedy'  
     ):
         """
