@@ -396,513 +396,209 @@ class Trainer(nn.Module):
 
         return total_loss.item(), topic_loss.item(), path_loss.item()
 
-    def fit_mixture(
+    def fit(
         self,
-        dataloader1, 
-        dataloader2, 
-        val_dataloader1=None, 
-        val_dataloader2=None, 
-        save_dir=None, 
-        pathtrainingstart=False
+        dataloader1,
+        val_dataloader1=None,
+        save_dir=None,
+        pathtrainingstart: bool = True,
     ):
         """
-        Extended training function that handles two training dataloaders
-        and two validation dataloaders. In each epoch, we train on both datasets,
-        then evaluate on both validation sets. Logging of metrics is done separately
-        for each dataset, and best models (based on F1) are saved separately for 
-        validation set 1 and validation set 2.
+        Train the model on a *single* dataset and (optionally) evaluate on a single
+        validation set each epoch.
 
-        Additionally, at the end of every epoch, the model weights are saved
-        to save_dir with filenames of the form: epoch_XXX_trainLoss_XXX.pt
+        The function:
+        • Performs mixed-precision training (GradScaler).
+        • Logs average topic loss, path loss, and total loss per epoch.
+        • Tracks the top-3 F1 scores on the validation set and checkpoints
+            those models separately.
+        • Saves a full model snapshot at the end of every epoch
+            (   epoch_XXX_trainLoss_YYY.pt   ).
 
-        Args:
-            dataloader1: PyTorch dataloader for training set 1.
-            dataloader2: PyTorch dataloader for training set 2.
-            val_dataloader1: PyTorch dataloader for validation set 1 (optional).
-            val_dataloader2: PyTorch dataloader for validation set 2 (optional).
-            save_dir (str): Directory to save logs and models.
-            pathtrainingstart (bool): Whether to include path loss from the start 
-                                    (can be toggled later in training).
+        Args
+        ----
+        dataloader1 : torch.utils.data.DataLoader
+            Training dataloader.
+        val_dataloader1 : torch.utils.data.DataLoader, optional
+            Validation dataloader.
+        save_dir : str, optional
+            Directory for logs and checkpoints.  Created if it does not exist.
+        pathtrainingstart : bool, default = False
+            Whether to include path loss from epoch 0.  (If you switch this flag
+            mid-training, pass the desired value here.)
         """
         scaler = torch.cuda.amp.GradScaler()
-        
-        # We'll track the top-3 F1 scores for each validation set:
-        best_f1_scores_1 = []
-        best_f1_scores_2 = []
 
-        # For OOM logging
+        # track top-3 validation F1
+        best_f1_scores = []
+
+        # prepare directories / offline logs
         if save_dir is not None:
             os.makedirs(save_dir, exist_ok=True)
-        log_file = os.path.join(save_dir, "oom_log.txt") if save_dir else "oom_log.txt"
-
-        # Prepare subdirectories for two separate validation sets
-        save_dir_set1 = None
-        save_dir_set2 = None
-        if save_dir is not None:
-            save_dir_set1 = os.path.join(save_dir, "val_set1")
-            save_dir_set2 = os.path.join(save_dir, "val_set2")
-            os.makedirs(save_dir_set1, exist_ok=True)
-            os.makedirs(save_dir_set2, exist_ok=True)
-
-        # Create storage for offline logging (if wandb is None)
-        if save_dir is not None:
+            save_dir_val = os.path.join(save_dir, "val_set")
+            os.makedirs(save_dir_val, exist_ok=True)
+            log_file = os.path.join(save_dir, "oom_log.txt")
             log_arrays = {
-                # Training logs for dataset 1
-                'TrainTopicLoss1': [],
-                'TrainPathLoss1': [],
-                'TrainTotalLoss1': [],
-                # Training logs for dataset 2
-                'TrainTopicLoss2': [],
-                'TrainPathLoss2': [],
-                'TrainTotalLoss2': [],
-                # Validation logs for dataset 1
-                'ValTopicLoss1': [],
-                'ValPathLoss1': [],
-                'Precision1': [],
-                'Recall1': [],
-                'F1_1': [],
-                # Validation logs for dataset 2
-                'ValTopicLoss2': [],
-                'ValPathLoss2': [],
-                'Precision2': [],
-                'Recall2': [],
-                'F1_2': []
+                'TrainTopicLoss': [], 'TrainPathLoss': [], 'TrainTotalLoss': [],
+                'ValTopicLoss':   [], 'ValPathLoss':   [],
+                'Precision':      [], 'Recall':        [], 'F1': []
             }
         else:
+            log_file = "oom_log.txt"
             log_arrays = None
 
         for epoch in range(1, self.epochs + 1):
-            # If we want path loss to start after some epoch, we can do:
+            # enable path loss immediately (set externally if you need delays)
             pathtrainingstart = True
-            start_time = time.time()  # Start timer
-            torch.cuda.reset_peak_memory_stats()  # Reset peak memory counter
 
-            ###################################
-            # Training on both datasets
-            ###################################
+            start_time = time.time()
+            torch.cuda.reset_peak_memory_stats()
             self.train()
 
-            # Accumulators for dataset 1
-            total_loss_1 = 0.0
-            total_topic_loss_1 = 0.0
-            total_path_loss_1 = 0.0
-            count_1 = 0
+            # accumulators
+            tot_loss = tot_topic = tot_path = 0.0
+            batch_cnt = 0
 
-            # Accumulators for dataset 2
-            total_loss_2 = 0.0
-            total_topic_loss_2 = 0.0
-            total_path_loss_2 = 0.0
-            count_2 = 0
-            # ----------- Train on dataset1 -----------
-            if 1:
-                print ('use cwq dataset')
-                for batch_idx, batch in enumerate(dataloader1):
-                    try:
-                        batch_loss, topic_loss, path_loss = self.train_step(batch, scaler, pathtrainingstart)
-                        total_loss_1 += batch_loss
-                        total_topic_loss_1 += topic_loss
-                        total_path_loss_1 += path_loss
-                        count_1 += 1
+            ################################################
+            # ----------  Training loop  -------------------
+            ################################################
+            for batch_idx, batch in enumerate(dataloader1):
+                try:
+                    loss, topic_loss, path_loss = self.train_step(
+                        batch, scaler, pathtrainingstart
+                    )
+                    tot_loss  += loss
+                    tot_topic += topic_loss
+                    tot_path  += path_loss
+                    batch_cnt += 1
 
-                        print(f"[Epoch {epoch} | Dataset1 | Batch {count_1}] "
-                            f"TopicLoss: {topic_loss:.4f}, PathLoss: {path_loss:.4f}, TotalLoss: {batch_loss:.4f}")
-                        if batch_idx==99: break
-                    except RuntimeError as e:
-                        print(f"Error: {e}")
-                        print(f"Error occurred at batch {count_1} in dataset1. Skipping batch.")
-                        torch.cuda.empty_cache()
-                        if "memory" in str(e).lower():
-                            message = (
-                                f"[OOM Error] Epoch {epoch}, Dataset1, Batch {batch_idx}\n"
-                                f"{traceback.format_exc()}\n"
-                                "-------------------------\n"
-                            )
-                            with open(log_file, "a") as f:
-                                f.write(message)
-                                continue
-                # Record peak CUDA memory usage in MB
-                max_mem = torch.cuda.max_memory_allocated() / (1024 * 1024)
-                self.epoch_cuda_memories.append(max_mem)
+                    print(f"[Epoch {epoch} | Batch {batch_cnt}] "
+                        f"TopicLoss: {topic_loss:.4f}, "
+                        f"PathLoss: {path_loss:.4f}, "
+                        f"TotalLoss: {loss:.4f}")
 
-                # Record runtime in seconds
-                epoch_time = time.time() - start_time
-                self.epoch_runtimes.append(epoch_time)
-                print (f"max memory: {max_mem}")
-                print (f"max time: {epoch_time}")
-                sys.exit()
-            # ----------- Train on dataset2 -----------
-            if 0:
-                print ('use webqsp dataset')
-                for batch_idx, batch in enumerate(dataloader2):
-                    try:
-                        batch_loss, topic_loss, path_loss = self.train_step(batch, scaler, pathtrainingstart)
-                        total_loss_2 += batch_loss
-                        total_topic_loss_2 += topic_loss
-                        total_path_loss_2 += path_loss
-                        count_2 += 1
+                except RuntimeError as e:
+                    print(f"RuntimeError at batch {batch_idx}: {e}")
+                    torch.cuda.empty_cache()
+                    if "memory" in str(e).lower():
+                        with open(log_file, "a") as f:
+                            f.write(f"[OOM] Epoch {epoch}, Batch {batch_idx}\n"
+                                    f"{traceback.format_exc()}\n"
+                                    "-------------------------\n")
+                    continue  # skip the failed batch
 
-                        print(f"[Epoch {epoch} | Dataset2 | Batch {count_2}] "
-                            f"TopicLoss: {topic_loss:.4f}, PathLoss: {path_loss:.4f}, TotalLoss: {batch_loss:.4f}")
-                    except RuntimeError as e:
-                        print(f"Error: {e}")
-                        print(f"Error occurred at batch {count_2} in dataset2. Skipping batch.")
-                        torch.cuda.empty_cache()
-                        if "memory" in str(e).lower():
-                            message = (
-                                f"[OOM Error] Epoch {epoch}, Dataset2, Batch {batch_idx}\n"
-                                f"{traceback.format_exc()}\n"
-                                "-------------------------\n"
-                            )
-                            with open(log_file, "a") as f:
-                                f.write(message)
-                        continue
-                # Record peak CUDA memory usage in MB
-                max_mem = torch.cuda.max_memory_allocated() / (1024 * 1024)
-                self.epoch_cuda_memories.append(max_mem)
+            # epoch-level statistics
+            avg_loss       = tot_loss  / max(1, batch_cnt)
+            avg_topic_loss = tot_topic / max(1, batch_cnt)
+            avg_path_loss  = tot_path  / max(1, batch_cnt)
 
-                # Record runtime in seconds
-                epoch_time = time.time() - start_time
-                self.epoch_runtimes.append(epoch_time)
+            print(f"Epoch {epoch} summary — "
+                f"AvgLoss: {avg_loss:.4f}, "
+                f"AvgTopicLoss: {avg_topic_loss:.4f}, "
+                f"AvgPathLoss: {avg_path_loss:.4f} ")
 
-            # Compute average losses for dataset1
-            avg_loss_1 = total_loss_1 / max(1, count_1)
-            avg_topic_loss_1 = total_topic_loss_1 / max(1, count_1)
-            avg_path_loss_1 = total_path_loss_1 / max(1, count_1)
-
-            # Compute average losses for dataset2
-            avg_loss_2 = total_loss_2 / max(1, count_2)
-            avg_topic_loss_2 = total_topic_loss_2 / max(1, count_2)
-            avg_path_loss_2 = total_path_loss_2 / max(1, count_2)
-
-            print(f"Epoch {epoch} done. "
-                f"[Dataset1] AvgLoss = {avg_loss_1:.4f}, AvgTopicLoss = {avg_topic_loss_1:.4f}, AvgPathLoss = {avg_path_loss_1:.4f}; "
-                f"[Dataset2] AvgLoss = {avg_loss_2:.4f}, AvgTopicLoss = {avg_topic_loss_2:.4f}, AvgPathLoss = {avg_path_loss_2:.4f}")
-
-            ###################################
-            # Logging training losses
-            ###################################
-            if self.run is not None:
-                # Log to wandb
+            ################################################
+            # ----------  Offline / wandb logging ----------
+            ################################################
+            if self.run is not None:            # wandb
                 self.run.log({
-                    'TrainTopicLoss1': avg_topic_loss_1,
-                    'TrainPathLoss1': avg_path_loss_1,
-                    'TrainTotalLoss1': avg_loss_1,
-                    'TrainTopicLoss2': avg_topic_loss_2,
-                    'TrainPathLoss2': avg_path_loss_2,
-                    'TrainTotalLoss2': avg_loss_2
+                    'TrainTopicLoss': avg_topic_loss,
+                    'TrainPathLoss':  avg_path_loss,
+                    'TrainTotalLoss': avg_loss,
                 })
-            elif log_arrays is not None:
-                # Log offline
-                log_arrays['TrainTopicLoss1'].append(avg_topic_loss_1)
-                log_arrays['TrainPathLoss1'].append(avg_path_loss_1)
-                log_arrays['TrainTotalLoss1'].append(avg_loss_1)
+            elif log_arrays is not None:        # offline
+                log_arrays['TrainTopicLoss'].append(avg_topic_loss)
+                log_arrays['TrainPathLoss'].append(avg_path_loss)
+                log_arrays['TrainTotalLoss'].append(avg_loss)
 
-                log_arrays['TrainTopicLoss2'].append(avg_topic_loss_2)
-                log_arrays['TrainPathLoss2'].append(avg_path_loss_2)
-                log_arrays['TrainTotalLoss2'].append(avg_loss_2)
-
-            ###################################
-            # Validation on both sets
-            ###################################
-            # We do exactly the same evaluation step for each validation set, 
-            # and log them separately.
-            if val_dataloader1 is not None and epoch > 50:
-                avg_topic_loss_val1, avg_path_loss_val1, precision1, recall1 = self.evaluate(
+            ################################################
+            # ----------  Validation (optional) ------------
+            ################################################
+            if val_dataloader1 is not None and epoch > 5:
+                val_topic, val_path, prec, rec = self.evaluate(
                     val_dataloader1,
                     eval_loss=True,
-                    eval_pr=True if pathtrainingstart else False,
+                    eval_pr=pathtrainingstart,
                     is_valid_or_test=True,
                     pathtrainingstart=pathtrainingstart,
                     dataset_idx=1
                 )
 
                 if pathtrainingstart:
-                    print(f"[Validation1] TopicLoss: {avg_topic_loss_val1:.4f}, "
-                        f"PathLoss: {avg_path_loss_val1:.4f}, "
-                        f"Precision: {precision1:.4f}, Recall: {recall1:.4f}")
+                    print(f"[Validation] TopicLoss: {val_topic:.4f}, "
+                        f"PathLoss: {val_path:.4f}, "
+                        f"Precision: {prec:.4f}, Recall: {rec:.4f}")
                 else:
-                    print(f"[Validation1] TopicLoss: {avg_topic_loss_val1:.4f}")
+                    print(f"[Validation] TopicLoss: {val_topic:.4f}")
 
-                # F1 for validation1
-                f1_score_1 = 0
-                if precision1 is not None and recall1 is not None and pathtrainingstart:
-                    if (precision1 + recall1) > 0:
-                        f1_score_1 = 2 * (precision1 * recall1) / (precision1 + recall1)
-                    else:
-                        f1_score_1 = 0
-                    print(f"[Validation1] F1 Score: {f1_score_1:.4f}")
+                # compute F1 (only if precision/recall valid)
+                f1 = 0.0
+                if pathtrainingstart and prec is not None and rec is not None:
+                    if prec + rec > 0:
+                        f1 = 2 * prec * rec / (prec + rec)
+                    print(f"[Validation] F1: {f1:.4f}")
 
-                # Logging metrics for validation1
+                # wandb / offline log
                 if self.run is not None:
-                    log_dict_1 = {'ValTopicLoss1': avg_topic_loss_val1}
+                    payload = {'ValTopicLoss': val_topic}
                     if pathtrainingstart:
-                        log_dict_1.update({
-                            'ValPathLoss1': avg_path_loss_val1,
-                            'Precision1': precision1,
-                            'Recall1': recall1,
-                            'F1_1': f1_score_1
+                        payload.update({
+                            'ValPathLoss': val_path,
+                            'Precision':   prec,
+                            'Recall':      rec,
+                            'F1':          f1,
                         })
-                    self.run.log(log_dict_1)
+                    self.run.log(payload)
                 elif log_arrays is not None:
-                    log_arrays['ValTopicLoss1'].append(avg_topic_loss_val1)
+                    log_arrays['ValTopicLoss'].append(val_topic)
                     if pathtrainingstart:
-                        log_arrays['ValPathLoss1'].append(avg_path_loss_val1)
-                        log_arrays['Precision1'].append(precision1)
-                        log_arrays['Recall1'].append(recall1)
-                        log_arrays['F1_1'].append(f1_score_1)
+                        log_arrays['ValPathLoss'].append(val_path)
+                        log_arrays['Precision'].append(prec)
+                        log_arrays['Recall'].append(rec)
+                        log_arrays['F1'].append(f1)
 
-                # Save model if top-3 F1 score on validation set1
-                if pathtrainingstart and f1_score_1 > 0:
-                    if len(best_f1_scores_1) < 3 or f1_score_1 > min(best_f1_scores_1):
-                        if len(best_f1_scores_1) >= 3:
-                            best_f1_scores_1.remove(min(best_f1_scores_1))
-                        best_f1_scores_1.append(f1_score_1)
-                        best_f1_scores_1.sort(reverse=True)
-
-                        if save_dir_set1 is not None:
-                            model_path_1 = os.path.join(
-                                save_dir_set1,
-                                f"model_epoch_{epoch}_f1_{f1_score_1:.4f}.pt"
-                            )
-                            torch.save(self.state_dict(), model_path_1)
-                            print(f"[Validation1] Model saved to {model_path_1}")
-
-            if val_dataloader2 is not None and epoch > 50:
-                avg_topic_loss_val2, avg_path_loss_val2, precision2, recall2 = self.evaluate(
-                    val_dataloader2,
-                    eval_loss=True,
-                    eval_pr=True if pathtrainingstart else False,
-                    is_valid_or_test=True,
-                    pathtrainingstart=pathtrainingstart,
-                    dataset_idx=2
-                )
-
-                if pathtrainingstart:
-                    print(f"[Validation2] TopicLoss: {avg_topic_loss_val2:.4f}, "
-                        f"PathLoss: {avg_path_loss_val2:.4f}, "
-                        f"Precision: {precision2:.4f}, Recall: {recall2:.4f}")
-                else:
-                    print(f"[Validation2] TopicLoss: {avg_topic_loss_val2:.4f}")
-
-                # F1 for validation2
-                f1_score_2 = 0
-                if precision2 is not None and recall2 is not None and pathtrainingstart:
-                    if (precision2 + recall2) > 0:
-                        f1_score_2 = 2 * (precision2 * recall2) / (precision2 + recall2)
-                    else:
-                        f1_score_2 = 0
-                    print(f"[Validation2] F1 Score: {f1_score_2:.4f}")
-
-                # Logging metrics for validation2
-                if self.run is not None:
-                    log_dict_2 = {'ValTopicLoss2': avg_topic_loss_val2}
-                    if pathtrainingstart:
-                        log_dict_2.update({
-                            'ValPathLoss2': avg_path_loss_val2,
-                            'Precision2': precision2,
-                            'Recall2': recall2,
-                            'F1_2': f1_score_2
-                        })
-                    self.run.log(log_dict_2)
-                elif log_arrays is not None:
-                    log_arrays['ValTopicLoss2'].append(avg_topic_loss_val2)
-                    if pathtrainingstart:
-                        log_arrays['ValPathLoss2'].append(avg_path_loss_val2)
-                        log_arrays['Precision2'].append(precision2)
-                        log_arrays['Recall2'].append(recall2)
-                        log_arrays['F1_2'].append(f1_score_2)
-
-                # Save model if top-3 F1 score on validation set2
-                if pathtrainingstart and f1_score_2 > 0:
-                    if len(best_f1_scores_2) < 3 or f1_score_2 > min(best_f1_scores_2):
-                        if len(best_f1_scores_2) >= 3:
-                            best_f1_scores_2.remove(min(best_f1_scores_2))
-                        best_f1_scores_2.append(f1_score_2)
-                        best_f1_scores_2.sort(reverse=True)
-
-                        if save_dir_set2 is not None:
-                            model_path_2 = os.path.join(
-                                save_dir_set2,
-                                f"model_epoch_{epoch}_f1_{f1_score_2:.4f}.pt"
-                            )
-                            torch.save(self.state_dict(), model_path_2)
-                            print(f"[Validation2] Model saved to {model_path_2}")
-
-            # Flush logs to file if wandb is off
-            if self.run is None and log_arrays is not None and save_dir is not None:
-                for key, values in log_arrays.items():
-                    npy_path = os.path.join(save_dir, f"{key}.npy")
-                    if len(values) == 0:
-                        continue
-                    if isinstance(values[0], torch.Tensor):
-                        values = [v.cpu().numpy() for v in values]
-                    np.save(npy_path, np.array(values))
-                print(f"Saved offline logs to {save_dir}")
-
-            ###################################
-            # NEW: Save model weights every epoch
-            ###################################
-            if save_dir is not None:
-                # Use the average of the two total losses for naming
-                avg_combined_loss = (avg_loss_1 + avg_loss_2) / 2.0
-                model_filename = f"epoch_{epoch}_trainLoss_{avg_combined_loss:.4f}.pt"
-                model_path = os.path.join(save_dir, model_filename)
-                torch.save(self.state_dict(), model_path)
-                print(f"[Epoch {epoch}] Model saved at {model_path}")
-
-        print("Training complete.")
-        print ('max memory:', self.epoch_cuda_memories[:5])
-        print ('epoch time:', self.epoch_runtimes[:5])
-
-
-    def fit(self, dataloader, val_dataloader=None, save_dir=None, pathtrainingstart=False):
-        scaler = torch.cuda.amp.GradScaler()
-
-        best_f1_scores = []
-        log_file = os.path.join(save_dir, "oom_log.txt")
-        eval_pr = True if pathtrainingstart else False
-
-        # Create storage for offline logging (if wandb is None)
-        if save_dir is not None:
-            os.makedirs(save_dir, exist_ok=True)
-            log_arrays = {
-                'TrainTopicLoss': [],
-                'TrainPathLoss': [],
-                'TrainTotalLoss': [],
-                'ValTopicLoss': [],
-                'ValPathLoss': [],
-                'Precision': [],
-                'Recall': [],
-                'F1': []
-            }
-        else:
-            log_arrays = None
-
-        for epoch in range(1, self.epochs + 1):
-            if epoch > 4:
-                pathtrainingstart = True  # Start path loss training after epoch 10
-
-            self.train()
-            total_loss = 0.0
-            total_path_loss = 0.0
-            total_topic_loss = 0.0
-            count = 0
-
-            for batch_idx, batch in enumerate(dataloader):
-                try:
-                    batch_loss, topic_loss, path_loss = self.train_step(batch, scaler, pathtrainingstart)
-
-                    total_loss += batch_loss
-                    total_path_loss += path_loss
-                    total_topic_loss += topic_loss
-                    count += 1
-
-                    print(f"[Epoch {epoch} Batch {count}] "
-                        f"TopicLoss: {topic_loss:.4f}, PathLoss: {path_loss:.4f}, TotalLoss: {batch_loss:.4f}")
-
-                except RuntimeError as e:
-                    print(f"Error: {e}")
-                    print(f"Error occurred at batch {count}. Skipping batch.")
-                    torch.cuda.empty_cache()
-
-                    if "memory" in str(e).lower():
-                        message = (
-                            f"[OOM Error] Epoch {epoch}, Batch {batch_idx}\n"
-                            f"{traceback.format_exc()}\n"
-                            "-------------------------\n"
-                        )
-                        with open(log_file, "a") as f:
-                            f.write(message)
-                    continue
-
-            avg_loss = total_loss / max(1, count)
-            avg_path_loss = total_path_loss / max(1, count)
-            avg_topic_loss = total_topic_loss / max(1, count)
-
-            print(f"Epoch {epoch} done. "
-                f"Avg Loss = {avg_loss:.4f}, "
-                f"Avg Path Loss = {avg_path_loss:.4f}, "
-                f"Avg Topic Loss = {avg_topic_loss:.4f}")
-
-            # Log to wandb or save to file
-            if self.run is not None:
-                self.run.log({
-                    'TrainTopicLoss': avg_topic_loss,
-                    'TrainPathLoss': avg_path_loss,
-                    'TrainTotalLoss': avg_loss
-                })
-            elif log_arrays is not None:
-                log_arrays['TrainTopicLoss'].append(avg_topic_loss)
-                log_arrays['TrainPathLoss'].append(avg_path_loss)
-                log_arrays['TrainTotalLoss'].append(avg_loss)
-
-            # Validation
-            if val_dataloader is not None:
-                avg_topic_loss_val, avg_path_loss_val, precision, recall = self.evaluate(
-                    val_dataloader,
-                    eval_loss=True,
-                    eval_pr=True if pathtrainingstart else False,
-                    is_valid_or_test=True,
-                    pathtrainingstart=pathtrainingstart
-                )
-
-                if pathtrainingstart:
-                    print(f"Validation Topic Loss: {avg_topic_loss_val:.4f}, "
-                        f"Validation Path Loss: {avg_path_loss_val:.4f}, "
-                        f"Precision: {precision:.4f}, Recall: {recall:.4f}")
-                else:
-                    print(f"Validation Topic Loss: {avg_topic_loss_val:.4f}")
-
-                # Log to wandb or save to file
-                if self.run is not None:
-                    log_dict = {'ValTopicLoss': avg_topic_loss_val}
-                    if pathtrainingstart:
-                        log_dict.update({
-                            'ValPathLoss': avg_path_loss_val,
-                            'Precision': precision,
-                            'Recall': recall
-                        })
-                    self.run.log(log_dict)
-                elif log_arrays is not None:
-                    log_arrays['ValTopicLoss'].append(avg_topic_loss_val)
-                    if pathtrainingstart:
-                        log_arrays['ValPathLoss'].append(avg_path_loss_val)
-                        log_arrays['Precision'].append(precision)
-                        log_arrays['Recall'].append(recall)
-
-                # Compute and log F1 if precision and recall are available
-                if precision is not None and recall is not None and pathtrainingstart:
-                    f1_score = 2 * (precision * recall) / (precision + recall) if (precision + recall) > 0 else 0
-                    print(f"Validation F1 Score: {f1_score:.4f}")
-
-                    if self.run is not None:
-                        self.run.log({'F1': f1_score})
-                    elif log_arrays is not None:
-                        log_arrays['F1'].append(f1_score)
-
-                    # Save model if it's a top-3 F1 score
-                    if len(best_f1_scores) < 3 or f1_score > min(best_f1_scores):
-                        if len(best_f1_scores) >= 3:
+                # checkpoint if within top-3 F1
+                if pathtrainingstart and f1 > 0:
+                    if len(best_f1_scores) < 3 or f1 > min(best_f1_scores):
+                        if len(best_f1_scores) == 3:
                             best_f1_scores.remove(min(best_f1_scores))
-                        best_f1_scores.append(f1_score)
+                        best_f1_scores.append(f1)
                         best_f1_scores.sort(reverse=True)
 
                         if save_dir is not None:
-                            model_path = os.path.join(save_dir, f"model_epoch_{epoch}_f1_{f1_score:.4f}.pt")
-                            torch.save(self.state_dict(), model_path)
-                            print(f"Model saved to {model_path}")
+                            ckpt_path = os.path.join(
+                                save_dir_val,
+                                f"model_epoch_{epoch}_f1_{f1:.4f}.pt"
+                            )
+                            torch.save(self.state_dict(), ckpt_path)
+                            print(f"[Validation] Checkpoint saved → {ckpt_path}")
 
-            # After each epoch, flush log_arrays to file if wandb is off
+            ################################################
+            # ----------  Flush offline logs ---------------
+            ################################################
             if self.run is None and log_arrays is not None and save_dir is not None:
-                for key, values in log_arrays.items():
-                    npy_path = os.path.join(save_dir, f"{key}.npy")
-                    if len(values) == 0:
+                for k, v in log_arrays.items():
+                    if not v:
                         continue
-                    if isinstance(values[0], torch.Tensor):
-                        values = [v.cpu().numpy() for v in values]
-                    np.save(npy_path, np.array(values))
-                print(f"Saved offline logs to {save_dir}")
+                    np.save(os.path.join(save_dir, f"{k}.npy"),
+                            np.array([x.cpu().numpy() if torch.is_tensor(x) else x
+                                    for x in v]))
+                print(f"Saved offline logs → {save_dir}")
+
+            ################################################
+            # ----------  Epoch-level checkpoint -----------
+            ################################################
+            if save_dir is not None:
+                ckpt_name = f"epoch_{epoch}_trainLoss_{avg_loss:.4f}.pt"
+                torch.save(self.state_dict(), os.path.join(save_dir, ckpt_name))
+                print(f"[Epoch {epoch}] Full model saved → {ckpt_name}")
+
         print("Training complete.")
+        print("Peak memory (first 5 epochs):", self.epoch_cuda_memories[:5])
+        print("Runtime     (first 5 epochs):", self.epoch_runtimes[:5])
+
+
+
 
 
     def evaluate(self, 
@@ -1067,7 +763,7 @@ class Trainer(nn.Module):
                         total_path_loss += batch_path_loss
 
                     # (B) Evaluate Recall + track # of nodes in sampled paths
-                    if eval_pr:
+                    if 0:
                         # call decoding
                         top_paths = self.decoding(
                             batch,
@@ -1119,18 +815,10 @@ class Trainer(nn.Module):
         avg_topic_loss = total_topic_loss / N_batch if eval_loss else None
         avg_path_loss = total_path_loss / N_batch if eval_loss else None
 
-        precision = 0.0
-        recall = 0.0
-        if eval_pr and total_true > 0:
-            recall = total_correct / total_true
-        if eval_pr and total_pred > 0:
-            precision = total_correct / total_pred
-
         print(f"Avg Topic Loss: {avg_topic_loss}, Avg Path Loss: {avg_path_loss}")
-        print(f"Recall: {recall:.4f}, Precision: {precision:.4f},Hit:{total_hit/global_graph_idx}")
         print(f"Avg number of nodes across all sampled paths in this dataset: {total_sampled_nodes/global_graph_idx}")
 
-        return avg_topic_loss, avg_path_loss, precision, recall, total_sampled_nodes, total_hit/global_graph_idx
+        return avg_topic_loss, avg_path_loss, None, None, total_sampled_nodes, total_hit/global_graph_idx
 
 
     def cond_evaluate(self, dataloader, eval_pr=True, is_valid_or_test=True,
