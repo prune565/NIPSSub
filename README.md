@@ -1,1 +1,41 @@
-# Let's submit!
+## Make dataset
+
+We use `webqsp` as an example. One can replace it with `cwq`.
+
+First run:
+```
+CUDA_VISIBLE_DEVICES=0 python emb.py --dataset webqsp
+```
+
+This will make retrieval dataset for webqsp dataset with text embeddings for question, entity and relations for each knowledge subgraph. Then run:
+```
+CUDA_VISIBLE_DEVICES=0 python MakeTrainData.py --dataset webqsp
+```
+This will process the dataset to obtain candidate reasoning paths with the distance info. Next,
+```
+CUDA_VISIBLE_DEVICES=0 python FindRationalPath.py --dataset webqsp
+```
+This will use LLM to identify rational paths in the training set.
+```
+CUDA_VISIBLE_DEVICES=0 python RelationPathTargeting.py --train_path xxx  --out_dir xxx
+```
+This will identify the possible relation set for each sample. Specify `train_path` obtained the previous stage to load pickle file (e.g., `data_files/webqsp/train_res_topic_relations.pkl`). Then specify `out_dir` (e.g., `data_files/webqsp/topic_relation_candidates/`) for saving the pickle file for the relation set. Finally, make the PyG dataset:
+```
+CUDA_VISIBLE_DEVICES=0 python load_post_processed_dataset.py --name webqsp
+```
+This will make the training set for webqsp, using previous saved pickle files. For valid and test set, we use:
+```
+CUDA_VISIBLE_DEVICES=0 python load_post_processed_dataset_test.py --name webqsp
+```
+This does not require rational path and relation labelling.
+
+Now we have a PyG dataset, and we can directly apply GNN model on it.
+
+## Train retriever
+
+With the obtained PyG dataset, we can train the graph retriever as follows:
+```
+CUDA_VISIBLE_DEVICES=0 python main.py --num_layers 2 --dataset_name webqsp --epochs 15 --bidirectional --use_stop_mlp
+```
+
+
