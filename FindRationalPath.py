@@ -113,9 +113,7 @@ def chat(args):
     
     # Define the system and prompt as per the original function
     first_prompt = """
-    Now given a question, and some candidate paths that connect question entity to answer entity, your task is to identify the rational paths that can lead to the answer.  Next I will give you a example, and you should pick out the rational paths.
-    
-    First present the explanation, then list the relation paths in the following format:
+    For the QA task, follow the following template to answer the question and list the rational paths:
     
     <Solution> The rational paths are:
     1. <relation path1>
@@ -209,13 +207,6 @@ def chat(args):
             print(colored(f"Error encountered: {e}. Retrying after 60 seconds...", 'cyan'))
             time.sleep(60)
         print ('processed sample count:',cnt)
-
-
-    # Process validation set
-    save_path = f"data_files/{dataset}/annotated_paths_GPT4o_mini/valid/"
-    save_path = f"data_files/{dataset}/annotated_paths_GPT4o/test/"  #! use test set for now
-    os.makedirs(save_path, exist_ok=True)
-    start_idx = 0
 
 
 if __name__ == '__main__':
