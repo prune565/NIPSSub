@@ -1,0 +1,3 @@
+<Solution> The rational paths are:
+1. [location.location.containedby]
+2. [base.locations.countries.continent, location.location.partially_contains]

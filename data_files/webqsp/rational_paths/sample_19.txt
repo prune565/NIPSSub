@@ -1,0 +1,3 @@
+<Solution> The rational paths are:
+1. [basketball.basketball_player.player_statistics, basketball.basketball_player_stats.season]
+2. [sports.sports_award_winner.awards, sports.sports_award.season]

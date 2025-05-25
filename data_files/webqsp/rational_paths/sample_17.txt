@@ -1,0 +1,2 @@
+<Solution> The rational paths are:
+1. [location.country.form_of_government]

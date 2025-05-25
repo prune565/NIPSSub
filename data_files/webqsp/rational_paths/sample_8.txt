@@ -1,0 +1,2 @@
+<Solution> The rational paths are:
+1. [fictional_universe.fictional_character.married_to, fictional_universe.marriage_of_fictional_characters.spouses]

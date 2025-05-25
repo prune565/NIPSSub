@@ -1,0 +1,3 @@
+<Solution> The rational paths are:
+1. [people.deceased_person.place_of_death]
+2. [common.topic.image, common.image.appears_in_topic_gallery, time.event.locations]

@@ -1,0 +1,2 @@
+<Solution> The rational paths are:
+1. [book.literary_series.works_in_this_series]

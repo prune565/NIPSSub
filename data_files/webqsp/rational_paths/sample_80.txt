@@ -1,0 +1,3 @@
+<Solution> The rational paths are:
+1. [tv.tv_character.appeared_in_tv_program, tv.regular_tv_appearance.actor]
+2. [tv.tv_character.appeared_in_tv_program, tv.regular_tv_appearance.series, tv.tv_program.regular_cast, tv.regular_tv_appearance.actor]

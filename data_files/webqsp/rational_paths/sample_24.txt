@@ -1,0 +1,3 @@
+<Solution> The rational paths are:
+1. [location.country.capital]
+2. [location.country.first_level_divisions, location.fr_region.departments]

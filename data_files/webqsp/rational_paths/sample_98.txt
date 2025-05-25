@@ -1,0 +1,4 @@
+<Solution> The rational paths are:
+1. [government.governmental_jurisdiction.governing_officials, government.government_position_held.office_holder]
+2. [government.governmental_jurisdiction.government_positions, government.government_office_or_title.office_holders, government.government_position_held.office_holder]
+3. [government.governmental_jurisdiction.government_bodies, government.governmental_body.members, government.government_position_held.office_holder]

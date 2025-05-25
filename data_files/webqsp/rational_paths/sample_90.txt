@@ -1,0 +1,3 @@
+<Solution> The rational paths are:
+1. [base.popstra.celebrity.dated, base.popstra.dated.participant]
+2. [celebrities.celebrity.sexual_relationships, celebrities.romantic_relationship.celebrity]

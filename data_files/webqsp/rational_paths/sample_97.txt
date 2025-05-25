@@ -1,0 +1,3 @@
+<Solution> The rational paths are:
+1. [people.person.education, education.education.institution]
+2. [people.person.education, education.education.institution, education.educational_institution.parent_institution]

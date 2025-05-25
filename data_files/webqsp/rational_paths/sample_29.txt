@@ -1,0 +1,3 @@
+<Solution> The rational paths are:
+1. [government.politician.election_campaigns, government.election_campaign.party]
+2. [government.politician.party, government.political_party_tenure.party]

@@ -1,0 +1,7 @@
+<Solution> The rational paths are:
+1. [location.location.contains]
+2. [base.aareas.schema.administrative_area.capital, location.location.nearby_airports]
+3. [travel.travel_destination.how_to_get_here, travel.transportation.transport_terminus]
+4. [location.administrative_division.capital, location.administrative_division_capital_relationship.capital, location.location.nearby_airports]
+5. [location.location.time_zones, time.time_zone.locations_in_this_time_zone, location.location.nearby_airports]
+6. [location.location.people_born_here, people.deceased_person.place_of_death, location.location.nearby_airports]

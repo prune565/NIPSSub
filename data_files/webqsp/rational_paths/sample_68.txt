@@ -1,0 +1,2 @@
+<Solution> The rational paths are:
+1. [government.political_district.representatives, government.government_position_held.office_holder]
