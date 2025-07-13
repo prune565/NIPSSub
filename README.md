@@ -1,3 +1,7 @@
+## Why RAPL generalizes?
+
+In summary, RAPL improves generalization in KGQA through three key aspects: 1) **Better supervision signal**, enabled by the inductive bias injected from LLMs with strong reasoning capabilities; 2) **Better inputs**, achieved via line graph transformation to better capture relational structures; 3) **Better (path-based) learning algorithm** to effectively absorb the injected rationale.
+
 ## Make dataset
 
 We use `webqsp` as an example. One can replace it with `cwq`.
